@@ -12,6 +12,8 @@ cd genuka-django-boilerplate
 ## Features
 
 - OAuth 2.0 authentication flow with Genuka
+- JWT Session Management with PyJWT
+- Double Cookie Security (session + refresh cookies)
 - HMAC signature validation for secure callbacks
 - Webhook event handling for real-time updates
 - Company data synchronization and storage
@@ -80,6 +82,7 @@ genuka-django-boilerplate/
 │   └── services/              # Business logic
 │       ├── oauth.py           # OAuth service
 │       ├── company.py         # Company DB service
+│       ├── session.py         # JWT session management
 │       └── genuka_api.py      # Genuka API client
 ├── manage.py
 ├── requirements.txt
@@ -88,11 +91,17 @@ genuka-django-boilerplate/
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/auth/callback` | OAuth callback handler |
-| POST | `/api/auth/webhook` | Webhook event receiver |
-| GET | `/health` | Health check endpoint |
+### Auth Endpoints
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/auth/callback` | No | OAuth callback handler |
+| GET | `/api/auth/check` | No | Check if authenticated |
+| POST | `/api/auth/refresh` | No | Refresh expired session |
+| GET | `/api/auth/me` | Yes | Get current company info |
+| POST | `/api/auth/logout` | Yes | Logout and destroy session |
+| POST | `/api/auth/webhook` | No | Webhook event receiver |
+| GET | `/health` | No | Health check endpoint |
 
 ## OAuth Flow
 
@@ -108,7 +117,102 @@ genuka-django-boilerplate/
    - Checks timestamp freshness (replay attack prevention)
    - Exchanges code for access token
    - Fetches and stores company data
+   - Creates session cookies (session + refresh)
    - Redirects user to the specified URL
+
+## Authentication
+
+### Double Cookie Security Pattern
+
+This boilerplate uses a secure **double cookie pattern** for session management:
+
+| Cookie | Duration | Purpose |
+|--------|----------|---------|
+| `session` | 7 hours | Access protected routes |
+| `refresh_session` | 30 days | Securely refresh expired sessions |
+
+Both cookies are **HTTP-only** (not accessible via JavaScript) and **signed JWT** (cannot be forged).
+
+### Session Refresh (No Reinstall Required)
+
+When the session expires, the client can securely refresh it:
+
+```
+POST /api/auth/refresh
+// No body required! The refresh_session cookie is sent automatically
+```
+
+**Security Flow:**
+1. Client calls `POST /api/auth/refresh` with no body
+2. Server reads `refresh_session` cookie (HTTP-only, inaccessible to JS)
+3. Server verifies the JWT signature (cannot be forged)
+4. Server extracts `companyId` from the verified JWT
+5. Server retrieves Genuka `refresh_token` from database
+6. Server calls Genuka API with `refresh_token` + `client_secret`
+7. Server updates tokens in database
+8. Server creates new `session` + `refresh_session` cookies
+
+**Why this is secure:**
+- No data sent in request body (nothing to forge)
+- `companyId` comes from a signed JWT cookie (tamper-proof)
+- Cookies are HTTP-only (not accessible via JavaScript/XSS)
+- Genuka `refresh_token` is never exposed to the client
+- Genuka API validates with `client_secret` (server-side only)
+
+### Using Session in Views
+
+```python
+from genuka_app.services import SessionService
+
+class MyView(View):
+    def get(self, request):
+        session_service = SessionService()
+
+        # Check if authenticated
+        if not session_service.is_authenticated(request):
+            return JsonResponse({'error': 'Unauthorized'}, status=401)
+
+        # Get current company
+        company = session_service.get_authenticated_company(request)
+
+        # Get company ID only
+        company_id = session_service.get_current_company_id(request)
+
+        return JsonResponse({'company': company.name})
+```
+
+### Handling 401 Errors (Frontend)
+
+```javascript
+async function fetchData() {
+    try {
+        const response = await fetch('/api/auth/me', {
+            credentials: 'include', // Important for cookies
+        });
+
+        if (response.status === 401) {
+            // Try to refresh the session
+            const refreshResponse = await fetch('/api/auth/refresh', {
+                method: 'POST',
+                credentials: 'include',
+            });
+
+            if (refreshResponse.ok) {
+                // Retry the original request
+                return await fetch('/api/auth/me', {
+                    credentials: 'include',
+                });
+            } else {
+                // Redirect to reinstall
+                window.location.href = '/install';
+            }
+        }
+        return response.json();
+    } catch (error) {
+        console.error('Request failed:', error);
+    }
+}
+```
 
 ## Webhook Events
 

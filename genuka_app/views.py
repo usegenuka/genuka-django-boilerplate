@@ -3,15 +3,18 @@ Views for Genuka OAuth and Webhook handling
 """
 import json
 import logging
+from datetime import timedelta
 from urllib.parse import unquote
 
 from django.http import JsonResponse, HttpResponseRedirect
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
+from django.utils import timezone
 from django.conf import settings
 
-from .services import OAuthService, CompanyService
+from .services import OAuthService, CompanyService, SessionService, GenukaApiService
+from .models import Company
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +64,14 @@ class CallbackView(View):
             # Decode redirect_to for actual redirect
             decoded_redirect = unquote(redirect_to)
 
-            return HttpResponseRedirect(decoded_redirect)
+            # Create response with redirect
+            response = HttpResponseRedirect(decoded_redirect)
+
+            # Create session cookies
+            session_service = SessionService()
+            session_service.create_session(company_id, response)
+
+            return response
 
         except ValueError as e:
             logger.error(f"OAuth validation error: {e}")
@@ -229,3 +239,145 @@ class HealthView(View):
             'status': 'ok',
             'service': 'Genuka Django Boilerplate',
         })
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CheckView(View):
+    """Check authentication status"""
+
+    def get(self, request):
+        """
+        Handle GET /api/auth/check
+
+        Returns:
+            JSON with authenticated status
+        """
+        session_service = SessionService()
+        is_authenticated = session_service.is_authenticated(request)
+
+        return JsonResponse({
+            'authenticated': is_authenticated,
+        })
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class RefreshView(View):
+    """Refresh session using refresh cookie"""
+
+    def post(self, request):
+        """
+        Handle POST /api/auth/refresh
+
+        No request body required - companyId comes from signed JWT cookie.
+        """
+        session_service = SessionService()
+
+        # Get companyId from signed refresh cookie (tamper-proof)
+        company_id = session_service.verify_refresh_token(request)
+
+        if not company_id:
+            return JsonResponse({
+                'error': 'Invalid or expired refresh token',
+                'code': 'REFRESH_TOKEN_INVALID',
+            }, status=401)
+
+        # Get company from database
+        try:
+            company = Company.objects.get(pk=company_id)
+        except Company.DoesNotExist:
+            return JsonResponse({
+                'error': 'Company not found',
+                'code': 'COMPANY_NOT_FOUND',
+            }, status=404)
+
+        # Check if company has a refresh token
+        if not company.refresh_token:
+            return JsonResponse({
+                'error': 'No refresh token available. Please reinstall the app.',
+                'code': 'NO_REFRESH_TOKEN',
+            }, status=401)
+
+        try:
+            # Call Genuka API to refresh tokens
+            genuka_api = GenukaApiService()
+            token_data = genuka_api.refresh_access_token(company.refresh_token)
+
+            # Calculate new expiration time
+            expires_in_minutes = token_data.get('expires_in_minutes', 60)
+            token_expires_at = timezone.now() + timedelta(minutes=expires_in_minutes)
+
+            # Update company with new tokens
+            company.access_token = token_data.get('access_token')
+            company.refresh_token = token_data.get('refresh_token') or company.refresh_token
+            company.token_expires_at = token_expires_at
+            company.save()
+
+            # Create new session cookies
+            response = JsonResponse({
+                'success': True,
+                'message': 'Session refreshed successfully',
+            })
+            session_service.create_session(company_id, response)
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Session refresh failed: {e}")
+            return JsonResponse({
+                'error': 'Failed to refresh session. Please reinstall the app.',
+                'code': 'REFRESH_FAILED',
+            }, status=401)
+
+
+class MeView(View):
+    """Get current authenticated company"""
+
+    def get(self, request):
+        """
+        Handle GET /api/auth/me
+
+        Returns:
+            JSON with current company info
+        """
+        session_service = SessionService()
+        company = session_service.get_authenticated_company(request)
+
+        if not company:
+            return JsonResponse({
+                'error': 'Not authenticated',
+                'code': 'UNAUTHORIZED',
+            }, status=401)
+
+        return JsonResponse({
+            'id': company.id,
+            'handle': company.handle,
+            'name': company.name,
+            'description': company.description,
+            'logo_url': company.logo_url,
+            'phone': company.phone,
+            'created_at': company.created_at.isoformat() if company.created_at else None,
+            'updated_at': company.updated_at.isoformat() if company.updated_at else None,
+        })
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class LogoutView(View):
+    """Logout and destroy session"""
+
+    def post(self, request):
+        """
+        Handle POST /api/auth/logout
+
+        Returns:
+            JSON with success status
+        """
+        session_service = SessionService()
+
+        response = JsonResponse({
+            'success': True,
+            'message': 'Successfully logged out',
+        })
+
+        session_service.destroy_session(response)
+
+        return response

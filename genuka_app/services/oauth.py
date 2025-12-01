@@ -4,9 +4,11 @@ OAuth Service for Genuka authentication
 import hmac
 import hashlib
 import time
+from datetime import timedelta
 from urllib.parse import urlencode
 
 from django.conf import settings
+from django.utils import timezone
 
 from .genuka_api import GenukaApiService
 from .company import CompanyService
@@ -28,12 +30,20 @@ class OAuthService:
 
         Returns:
             HMAC signature as hex string
+
+        Note:
+            The redirect_to parameter arrives already URL-encoded once (Django decodes query params).
+            urlencode will encode it again, matching Genuka's double encoding.
+            We use quote_via=quote to match PHP's http_build_query behavior.
         """
+        from urllib.parse import quote
+
         # Sort parameters alphabetically by key
         sorted_params = dict(sorted(params.items()))
 
-        # Build query string
-        query_string = urlencode(sorted_params)
+        # Build query string using quote (not quote_plus) to match PHP's http_build_query
+        # PHP uses rawurlencode for values which encodes spaces as %20, not +
+        query_string = urlencode(sorted_params, quote_via=quote)
 
         # Generate HMAC-SHA256
         signature = hmac.new(
@@ -109,11 +119,15 @@ class OAuthService:
         if not self.validate_timestamp(timestamp):
             raise ValueError('Request expired')
 
-        # Exchange code for access token
-        access_token = self.genuka_api.exchange_code_for_token(code)
+        # Exchange code for tokens
+        token_data = self.genuka_api.exchange_code_for_token(code)
 
         # Fetch company information
         company_info = self.genuka_api.get_company_info(company_id)
+
+        # Calculate token expiration time
+        expires_in_minutes = token_data.get('expires_in_minutes', 60)
+        token_expires_at = timezone.now() + timedelta(minutes=expires_in_minutes)
 
         # Save/update company in database
         company_data = {
@@ -123,7 +137,9 @@ class OAuthService:
             'description': company_info.get('description'),
             'logo_url': company_info.get('logoUrl'),
             'authorization_code': code,
-            'access_token': access_token,
+            'access_token': token_data.get('access_token'),
+            'refresh_token': token_data.get('refresh_token'),
+            'token_expires_at': token_expires_at,
             'phone': company_info.get('metadata', {}).get('contact'),
         }
 

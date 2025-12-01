@@ -13,16 +13,18 @@ class GenukaApiService:
         self.client_id = settings.GENUKA_CLIENT_ID
         self.client_secret = settings.GENUKA_CLIENT_SECRET
         self.redirect_uri = settings.GENUKA_REDIRECT_URI
+        # Disable SSL verification in debug mode (local development)
+        self.verify_ssl = not settings.DEBUG
 
-    def exchange_code_for_token(self, code: str) -> str:
+    def exchange_code_for_token(self, code: str) -> dict:
         """
-        Exchange authorization code for access token.
+        Exchange authorization code for tokens.
 
         Args:
             code: Authorization code from OAuth callback
 
         Returns:
-            Access token string
+            Dictionary with access_token, refresh_token, expires_in_minutes
 
         Raises:
             Exception: If token exchange fails
@@ -41,13 +43,54 @@ class GenukaApiService:
             'Content-Type': 'application/x-www-form-urlencoded',
         }
 
-        response = requests.post(token_url, data=payload, headers=headers)
+        response = requests.post(token_url, data=payload, headers=headers, verify=self.verify_ssl)
 
         if not response.ok:
             raise Exception(f"Token exchange failed: {response.status_code} {response.text}")
 
         data = response.json()
-        return data.get('access_token')
+        return {
+            'access_token': data.get('access_token'),
+            'refresh_token': data.get('refresh_token'),
+            'expires_in_minutes': data.get('expires_in_minutes', 60),
+        }
+
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        """
+        Refresh access token using refresh token.
+
+        Args:
+            refresh_token: Genuka refresh token
+
+        Returns:
+            Dictionary with access_token, refresh_token, expires_in_minutes
+
+        Raises:
+            Exception: If token refresh fails
+        """
+        refresh_url = f"{self.base_url}/oauth/refresh"
+
+        payload = {
+            'refresh_token': refresh_token,
+            'client_id': self.client_id,
+            'client_secret': self.client_secret,
+        }
+
+        headers = {
+            'Content-Type': 'application/json',
+        }
+
+        response = requests.post(refresh_url, json=payload, headers=headers, verify=self.verify_ssl)
+
+        if not response.ok:
+            raise Exception(f"Token refresh failed: {response.status_code} {response.text}")
+
+        data = response.json()
+        return {
+            'access_token': data.get('access_token'),
+            'refresh_token': data.get('refresh_token'),
+            'expires_in_minutes': data.get('expires_in_minutes', 60),
+        }
 
     def get_company_info(self, company_id: str) -> dict:
         """
@@ -62,7 +105,7 @@ class GenukaApiService:
         # Using Genuka API to get company info
         url = f"{self.base_url}/companies/{company_id}"
 
-        response = requests.get(url)
+        response = requests.get(url, verify=self.verify_ssl)
 
         if not response.ok:
             # Return minimal info if API call fails
@@ -88,7 +131,7 @@ class GenukaApiService:
             'Content-Type': 'application/json',
         }
 
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, verify=self.verify_ssl)
 
         if not response.ok:
             raise Exception(f"GET {endpoint} failed: {response.status_code}")
@@ -114,7 +157,7 @@ class GenukaApiService:
             'Content-Type': 'application/json',
         }
 
-        response = requests.post(url, json=data, headers=headers)
+        response = requests.post(url, json=data, headers=headers, verify=self.verify_ssl)
 
         if not response.ok:
             raise Exception(f"POST {endpoint} failed: {response.status_code}")

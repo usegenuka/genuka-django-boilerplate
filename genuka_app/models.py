@@ -12,6 +12,8 @@ class Company(models.Model):
     logo_url = models.URLField(max_length=500, null=True, blank=True)
     authorization_code = models.CharField(max_length=500, null=True, blank=True)
     access_token = models.TextField(null=True, blank=True)
+    refresh_token = models.TextField(null=True, blank=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
     phone = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

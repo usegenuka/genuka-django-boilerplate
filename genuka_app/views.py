@@ -241,6 +241,32 @@ class HealthView(View):
         })
 
 
+class HomeView(View):
+    """Home page - shows current company info if authenticated"""
+
+    def get(self, request):
+        """Handle GET /"""
+        session_service = SessionService()
+        company = session_service.get_authenticated_company(request)
+
+        if company:
+            return JsonResponse({
+                'message': f'Bienvenue, {company.name}!',
+                'authenticated': True,
+                'company': {
+                    'id': company.id,
+                    'name': company.name,
+                    'handle': company.handle,
+                },
+            })
+
+        return JsonResponse({
+            'message': 'Bienvenue sur Genuka Django Boilerplate',
+            'authenticated': False,
+            'hint': 'Installez l\'app via Genuka pour vous connecter',
+        })
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class CheckView(View):
     """Check authentication status"""

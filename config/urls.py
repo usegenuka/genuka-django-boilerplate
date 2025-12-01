@@ -16,9 +16,10 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from genuka_app.views import HealthView
+from genuka_app.views import HealthView, HomeView
 
 urlpatterns = [
+    path('', HomeView.as_view(), name='home'),
     path('admin/', admin.site.urls),
     path('api/', include('genuka_app.urls')),
     path('health', HealthView.as_view(), name='health'),
